@@ -8,3 +8,9 @@ __pycache__/
 *.tfstate.*
 crash.log
 *.tfplan
+
+lambda_package/
+
+# Generated AWS Lambda deployment package
+cloudops360-lambda.zip
+dynamodb-key.json
