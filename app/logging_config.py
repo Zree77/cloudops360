@@ -1,21 +1,24 @@
 import json
 import logging
 import os
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 
-class JSONFormatter(logging.Formatter):
-    """Format application logs as structured JSON."""
+class JsonFormatter(logging.Formatter):
+    """Format log records as structured JSON."""
 
     RESERVED_FIELDS = set(
-        logging.makeLogRecord({}).__dict__.keys()
-    ) | {
-        "message",
-        "asctime",
-        "taskName",
-    }
+        logging.LogRecord(
+            name="",
+            level=0,
+            pathname="",
+            lineno=0,
+            msg="",
+            args=(),
+            exc_info=None,
+        ).__dict__.keys()
+    )
 
     def format(self, record: logging.LogRecord) -> str:
         log_entry = {
@@ -23,48 +26,59 @@ class JSONFormatter(logging.Formatter):
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
-            "service": os.getenv("SERVICE_NAME", "cloudops360"),
-            "environment": os.getenv("APP_ENV", "dev"),
+            "service": "cloudops360",
+            "environment": os.getenv("ENVIRONMENT", "development"),
         }
 
         for key, value in record.__dict__.items():
-            if key not in self.RESERVED_FIELDS and key not in log_entry:
+            if key not in self.RESERVED_FIELDS and not key.startswith("_"):
                 log_entry[key] = value
 
         if record.exc_info:
-            log_entry["exception"] = self.formatException(
-                record.exc_info
-            )
+            log_entry["exception"] = self.formatException(record.exc_info)
 
         return json.dumps(log_entry, default=str)
 
 
 def configure_logging() -> logging.Logger:
-    """Configure JSON logging to the terminal and local file."""
+    """Configure structured logging for local development and AWS Lambda."""
+
+    logger = logging.getLogger("cloudops360")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    # Avoid adding duplicate handlers if configuration is called repeatedly.
+    if logger.handlers:
+        return logger
+
+    formatter = JsonFormatter()
+
+    # Console logging works locally and in AWS Lambda.
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    # Local development can additionally write logs to a file.
+    # Lambda uses CloudWatch and must not write under /var/task.
+    if os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+        return logger
 
     log_directory = Path(__file__).resolve().parent.parent / "logs"
-    log_directory.mkdir(parents=True, exist_ok=True)
 
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
-
-    # Avoid adding duplicate handlers during module reloads.
-    if not any(
-        isinstance(handler.formatter, JSONFormatter)
-        for handler in root_logger.handlers
-    ):
-        formatter = JSONFormatter()
-
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(formatter)
+    try:
+        log_directory.mkdir(parents=True, exist_ok=True)
 
         file_handler = logging.FileHandler(
             log_directory / "cloudops360.jsonl",
             encoding="utf-8",
         )
         file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
 
-        root_logger.addHandler(console_handler)
-        root_logger.addHandler(file_handler)
+    except OSError:
+        # Keep console logging operational if local file logging is unavailable.
+        logger.warning(
+            "File logging is unavailable; continuing with console logging."
+        )
 
-    return logging.getLogger("cloudops360")
+    return logger
