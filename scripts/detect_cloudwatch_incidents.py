@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from collections import defaultdict
@@ -101,7 +102,7 @@ def save_state(state):
 
 
 def append_alert(event):
-    """Append an incident lifecycle event to the CloudWatch alert history."""
+    """Append an incident lifecycle event to CloudWatch alert history."""
 
     ALERT_FILE.parent.mkdir(parents=True, exist_ok=True)
 
@@ -115,12 +116,24 @@ def incident_key(component, fingerprint):
     return f"{component}:{fingerprint}"
 
 
-def classify_error(event):
+def generate_incident_id(key, timestamp):
     """
-    Classify a normalized CloudWatch event as an application error.
+    Generate a deterministic incident ID.
 
-    Lambda system events are not automatically treated as errors.
+    The SHA-256 suffix is stable for the same incident key.
+    The timestamp distinguishes incidents opened at different times.
     """
+
+    timestamp_part = timestamp.strftime("%Y%m%dT%H%M%S")
+    hash_part = hashlib.sha256(
+        key.encode("utf-8")
+    ).hexdigest()[:10].upper()
+
+    return f"CW-{timestamp_part}-{hash_part}"
+
+
+def classify_error(event):
+    """Classify a normalized CloudWatch application error."""
 
     if event.get("source") != "cloudwatch":
         return None
@@ -132,9 +145,7 @@ def classify_error(event):
         return None
 
     message = str(event.get("message", "Unknown error"))
-
     component = str(event.get("component", "cloudops360-api"))
-
     operation = str(event.get("operation", "unknown"))
 
     # Group repeated failures by component and operation.
@@ -162,7 +173,7 @@ def main():
     state = load_state()
     incidents = state["incidents"]
 
-    # Only analyze actual normalized CloudWatch application ERROR events.
+    # Analyze actual normalized CloudWatch application ERROR events.
     timestamped_errors = []
 
     for event in events:
@@ -176,11 +187,13 @@ def main():
         if timestamp is None or timestamp > now:
             continue
 
-        timestamped_errors.append((timestamp, event, classification))
+        timestamped_errors.append(
+            (timestamp, event, classification)
+        )
 
     timestamped_errors.sort(key=lambda item: item[0])
 
-    # Count errors by component and operation within the detection window.
+    # Count errors by component and operation within the time window.
     recent_errors = defaultdict(list)
 
     for timestamp, event, classification in timestamped_errors:
@@ -192,7 +205,9 @@ def main():
             classification["fingerprint"],
         )
 
-        recent_errors[key].append((timestamp, event, classification))
+        recent_errors[key].append(
+            (timestamp, event, classification)
+        )
 
     qualifying = {
         key: records
@@ -208,25 +223,30 @@ def main():
 
         incident = incidents.get(key)
 
-        # Do not open duplicate incidents on repeated executions.
+        # Update an existing open incident without duplicating its alert.
         if incident and incident.get("status") == "OPEN":
             incident["last_error_at"] = latest_timestamp.isoformat()
             incident["error_count"] = len(records)
             updated_count += 1
             continue
 
-        # A resolved incident can reopen only when a new error occurs
-        # after its recorded resolution timestamp.
+        # Do not reopen a resolved incident using errors that occurred
+        # before or at its recorded resolution time.
         if incident and incident.get("status") == "RESOLVED":
-            resolved_at = parse_timestamp(incident.get("resolved_at"))
+            resolved_at = parse_timestamp(
+                incident.get("resolved_at")
+            )
 
-            if resolved_at is not None and latest_timestamp <= resolved_at:
+            if (
+                resolved_at is not None
+                and latest_timestamp <= resolved_at
+            ):
                 continue
 
         incident = {
-            "incident_id": (
-                f"CW-{latest_timestamp.strftime('%Y%m%dT%H%M%S')}-"
-                f"{abs(hash(key)) % 100000:05d}"
+            "incident_id": generate_incident_id(
+                key,
+                latest_timestamp,
             ),
             "source": "cloudwatch",
             "component": classification["component"],
@@ -258,7 +278,8 @@ def main():
         opened_count += 1
 
         print(
-            f"OPENED: CloudWatch incident {incident['incident_id']} "
+            f"OPENED: CloudWatch incident "
+            f"{incident['incident_id']} "
             f"for {incident['component']} "
             f"({incident['error_count']} errors)"
         )

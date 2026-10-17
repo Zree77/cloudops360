@@ -2,7 +2,8 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from scripts import detect_cloudwatch_incidents as detector
-
+import subprocess
+import sys
 
 def make_error(timestamp, operation="get_task", message="Database operation failed"):
     return {
@@ -168,3 +169,25 @@ def test_repeated_execution_does_not_duplicate_open_alert(
     assert len(state["incidents"]) == 1
     assert len(alerts) == 1
     assert alerts[0]["event"] == "INCIDENT_OPENED"
+def test_incident_id_is_stable_across_processes():
+    code = (
+        "from datetime import datetime, timezone; "
+        "from scripts.detect_cloudwatch_incidents import generate_incident_id; "
+        "print(generate_incident_id("
+        "'dynamodb:dynamodb:get_task', "
+        "datetime(2026, 10, 18, tzinfo=timezone.utc)))"
+    )
+
+    first = subprocess.check_output(
+        [sys.executable, "-c", code],
+        text=True,
+    ).strip()
+
+    second = subprocess.check_output(
+        [sys.executable, "-c", code],
+        text=True,
+    ).strip()
+
+    assert first == second
+    assert first.startswith("CW-20261018T000000-")
+    assert len(first.split("-")[-1]) == 10
