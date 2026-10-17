@@ -41,6 +41,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Diagnose GitHub OIDC claims
+        uses: actions/github-script@v7
+        with:
+          script: |
+            console.log("Repository:", process.env.GITHUB_REPOSITORY);
+            console.log("Ref:", process.env.GITHUB_REF);
+            console.log("Event:", process.env.GITHUB_EVENT_NAME);  
+
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
