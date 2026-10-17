@@ -14,3 +14,6 @@ lambda_package/
 # Generated AWS Lambda deployment package
 cloudops360-lambda.zip
 dynamodb-key.json
+
+# Generated application logs and incident state
+logs/

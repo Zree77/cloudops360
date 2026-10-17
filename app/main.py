@@ -8,8 +8,11 @@ import boto3
 from botocore.exceptions import ClientError
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
-
 from mangum import Mangum
+
+from app.logging_config import configure_logging
+
+logger = configure_logging()
 
 AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
 DYNAMODB_TABLE = os.getenv(
@@ -17,9 +20,9 @@ DYNAMODB_TABLE = os.getenv(
     "cloudops360-dev-tasks",
 )
 
-# Use the normal AWS credential provider chain.
-# Locally, this can use credentials from the AWS CLI.
-# On AWS Lambda, use the Lambda execution role.
+# Use the standard AWS credential provider chain.
+# Locally, credentials can come from the AWS CLI.
+# On Lambda, credentials come from the execution role.
 dynamodb = boto3.resource(
     "dynamodb",
     region_name=AWS_REGION,
@@ -27,6 +30,10 @@ dynamodb = boto3.resource(
 
 tasks_table = dynamodb.Table(DYNAMODB_TABLE)
 
+
+# --------------------------------------------------
+# Request and response models
+# --------------------------------------------------
 
 class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
@@ -46,13 +53,24 @@ class TaskResponse(BaseModel):
     updated_at: datetime
 
 
+# --------------------------------------------------
+# Helper functions
+# --------------------------------------------------
+
 def get_task_or_404(task_id: UUID) -> dict:
+    """Retrieve a task from DynamoDB or raise an HTTP error."""
+
     try:
         response = tasks_table.get_item(
             Key={"task_id": str(task_id)}
         )
+
     except ClientError as exc:
-        print(f"DynamoDB get_item failed: {exc}")
+        logger.exception(
+            "DynamoDB get_item failed",
+            extra={"task_id": str(task_id)},
+        )
+
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to retrieve task from storage",
@@ -76,25 +94,41 @@ def get_task_or_404(task_id: UUID) -> dict:
     }
 
 
+# --------------------------------------------------
+# Application lifecycle
+# --------------------------------------------------
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("CloudOps360 API starting...")
-    print(f"AWS region: {AWS_REGION}")
-    print(f"DynamoDB table: {DYNAMODB_TABLE}")
+    logger.info(
+        "CloudOps360 API starting",
+        extra={
+            "aws_region": AWS_REGION,
+            "dynamodb_table": DYNAMODB_TABLE,
+        },
+    )
+
     yield
-    print("CloudOps360 API shutting down...")
+
+    logger.info("CloudOps360 API shutting down")
 
 
 app = FastAPI(
     title="CloudOps360 API",
     description="Serverless task management and operations platform",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
 
+# --------------------------------------------------
+# Root and health endpoints
+# --------------------------------------------------
+
 @app.get("/")
 def root():
+    logger.info("Root endpoint requested")
+
     return {
         "application": "CloudOps360",
         "message": "Welcome to CloudOps360 API",
@@ -104,11 +138,17 @@ def root():
 
 @app.get("/health")
 def health():
+    logger.info("Health check requested")
+
     return {
         "status": "healthy",
         "application": "CloudOps360",
     }
 
+
+# --------------------------------------------------
+# Create task
+# --------------------------------------------------
 
 @app.post(
     "/tasks",
@@ -133,12 +173,25 @@ def create_task(payload: TaskCreate):
             Item=task,
             ConditionExpression="attribute_not_exists(task_id)",
         )
+
     except ClientError as exc:
-        print(f"DynamoDB put_item failed: {exc}")
+        logger.exception(
+            "DynamoDB put_item failed",
+            extra={"task_id": str(task_id)},
+        )
+
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to save task",
         ) from exc
+
+    logger.info(
+        "Task created",
+        extra={
+            "task_id": str(task_id),
+            "task_status": task["status"],
+        },
+    )
 
     return {
         "id": task["task_id"],
@@ -150,25 +203,37 @@ def create_task(payload: TaskCreate):
     }
 
 
+# --------------------------------------------------
+# List tasks
+# --------------------------------------------------
+
 @app.get("/tasks", response_model=list[TaskResponse])
 def list_tasks():
     try:
         response = tasks_table.scan()
         items = response.get("Items", [])
 
-        # Read all pages if the table contains more than one page.
+        # Retrieve subsequent pages if the table contains
+        # more items than can be returned in one scan.
         while "LastEvaluatedKey" in response:
             response = tasks_table.scan(
                 ExclusiveStartKey=response["LastEvaluatedKey"]
             )
+
             items.extend(response.get("Items", []))
 
     except ClientError as exc:
-        print(f"DynamoDB scan failed: {exc}")
+        logger.exception("DynamoDB scan failed")
+
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to list tasks",
         ) from exc
+
+    logger.info(
+        "Tasks listed",
+        extra={"task_count": len(items)},
+    )
 
     return [
         {
@@ -183,20 +248,38 @@ def list_tasks():
     ]
 
 
+# --------------------------------------------------
+# Retrieve individual task
+# --------------------------------------------------
+
 @app.get("/tasks/{task_id}", response_model=TaskResponse)
 def get_task(task_id: UUID):
-    return get_task_or_404(task_id)
+    task = get_task_or_404(task_id)
 
+    logger.info(
+        "Task retrieved",
+        extra={"task_id": str(task_id)},
+    )
+
+    return task
+
+
+# --------------------------------------------------
+# Update task
+# --------------------------------------------------
 
 @app.patch("/tasks/{task_id}", response_model=TaskResponse)
 def update_task(task_id: UUID, payload: TaskUpdate):
-    # First check that the task exists.
+    # Check whether the task exists before updating it.
     get_task_or_404(task_id)
 
     try:
         tasks_table.update_item(
             Key={"task_id": str(task_id)},
-            UpdateExpression="SET #task_status = :new_status, updated_at = :updated_at",
+            UpdateExpression=(
+                "SET #task_status = :new_status, "
+                "updated_at = :updated_at"
+            ),
             ExpressionAttributeNames={
                 "#task_status": "status",
             },
@@ -206,15 +289,34 @@ def update_task(task_id: UUID, payload: TaskUpdate):
             },
             ConditionExpression="attribute_exists(task_id)",
         )
+
     except ClientError as exc:
-        print(f"DynamoDB update_item failed: {exc}")
+        logger.exception(
+            "DynamoDB update_item failed",
+            extra={"task_id": str(task_id)},
+        )
+
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to update task",
         ) from exc
 
-    return get_task_or_404(task_id)
+    updated_task = get_task_or_404(task_id)
 
+    logger.info(
+        "Task status updated",
+        extra={
+            "task_id": str(task_id),
+            "task_status": updated_task["status"],
+        },
+    )
+
+    return updated_task
+
+
+# --------------------------------------------------
+# Delete task
+# --------------------------------------------------
 
 @app.delete(
     "/tasks/{task_id}",
@@ -226,6 +328,7 @@ def delete_task(task_id: UUID):
             Key={"task_id": str(task_id)},
             ConditionExpression="attribute_exists(task_id)",
         )
+
     except ClientError as exc:
         error_code = exc.response.get("Error", {}).get("Code")
 
@@ -235,12 +338,26 @@ def delete_task(task_id: UUID):
                 detail="Task not found",
             ) from exc
 
-        print(f"DynamoDB delete_item failed: {exc}")
+        logger.exception(
+            "DynamoDB delete_item failed",
+            extra={"task_id": str(task_id)},
+        )
+
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to delete task",
         ) from exc
 
+    logger.info(
+        "Task deleted",
+        extra={"task_id": str(task_id)},
+    )
+
     return None
+
+
+# --------------------------------------------------
 # AWS Lambda entry point
+# --------------------------------------------------
+
 handler = Mangum(app)
