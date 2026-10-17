@@ -191,3 +191,63 @@ def test_incident_id_is_stable_across_processes():
     assert first == second
     assert first.startswith("CW-20261018T000000-")
     assert len(first.split("-")[-1]) == 10
+
+def test_lambda_timeout_is_classified():
+    event = {
+        "source": "cloudwatch",
+        "log_type": "lambda_system",
+        "message": "Task timed out after 15.00 seconds",
+    }
+
+    result = detector.classify_error(event)
+
+    assert result is not None
+    assert result["component"] == "aws-lambda-runtime"
+    assert "task timed out" in result["fingerprint"]
+
+
+def test_lambda_runtime_exit_error_is_classified():
+    event = {
+        "source": "cloudwatch",
+        "log_type": "lambda_system",
+        "message": "Runtime.ExitError: Runtime exited with error",
+    }
+
+    result = detector.classify_error(event)
+
+    assert result is not None
+    assert result["component"] == "aws-lambda-runtime"
+    assert "runtime.exiterror" in result["fingerprint"]
+
+
+def test_lambda_import_module_error_is_classified():
+    event = {
+        "source": "cloudwatch",
+        "log_type": "lambda_system",
+        "message": "Runtime.ImportModuleError: No module named 'missing_module'",
+    }
+
+    result = detector.classify_error(event)
+
+    assert result is not None
+    assert "runtime.importmoduleerror" in result["fingerprint"]
+
+
+def test_normal_lambda_system_message_is_ignored():
+    event = {
+        "source": "cloudwatch",
+        "log_type": "lambda_system",
+        "message": "REPORT RequestId: abc Duration: 12.5 ms",
+    }
+
+    assert detector.classify_error(event) is None
+
+
+def test_local_runtime_error_is_ignored():
+    event = {
+        "source": "local",
+        "log_type": "lambda_system",
+        "message": "Task timed out after 15.00 seconds",
+    }
+
+    assert detector.classify_error(event) is None

@@ -133,30 +133,65 @@ def generate_incident_id(key, timestamp):
 
 
 def classify_error(event):
-    """Classify a normalized CloudWatch application error."""
+    """
+    Classify application errors and AWS Lambda runtime failures
+    from normalized CloudWatch events.
+    """
 
     if event.get("source") != "cloudwatch":
         return None
 
-    if event.get("log_type") != "application":
-        return None
-
-    if str(event.get("level", "")).upper() != "ERROR":
-        return None
-
+    log_type = event.get("log_type")
     message = str(event.get("message", "Unknown error"))
     component = str(event.get("component", "cloudops360-api"))
-    operation = str(event.get("operation", "unknown"))
 
-    # Group repeated failures by component and operation.
-    fingerprint = f"{component}:{operation}"
+    # Case 1: Existing structured application errors.
+    if log_type == "application":
+        if str(event.get("level", "")).upper() != "ERROR":
+            return None
 
-    return {
-        "component": component,
-        "fingerprint": fingerprint,
-        "message": message,
-    }
+        operation = str(event.get("operation", "unknown"))
+        fingerprint = f"{component}:{operation}"
 
+        return {
+            "component": component,
+            "fingerprint": fingerprint,
+            "message": message,
+        }
+
+    # Case 2: AWS Lambda runtime failures in plain-text system events.
+    if log_type == "lambda_system":
+        normalized_message = message.lower()
+
+        runtime_failure_patterns = (
+            "task timed out",
+            "runtime.exiterror",
+            "runtime.importmoduleerror",
+            "runtime.handlernotfound",
+            "runtime.invalidruntime",
+            "init error",
+            "initialization error",
+        )
+
+        matched_pattern = next(
+            (
+                pattern
+                for pattern in runtime_failure_patterns
+                if pattern in normalized_message
+            ),
+            None,
+        )
+
+        if matched_pattern is None:
+            return None
+
+        return {
+            "component": "aws-lambda-runtime",
+            "fingerprint": f"aws-lambda-runtime:{matched_pattern}",
+            "message": message,
+        }
+
+    return None
 
 def main():
     if ERROR_THRESHOLD < 1:
