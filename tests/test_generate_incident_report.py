@@ -18,11 +18,12 @@ def test_format_duration():
 
 def test_matching_recovery_event_is_verified():
     incident = {
-        "incident_id": "INC-001",
-        "component": "dynamodb",
-        "status": "RESOLVED",
-        "resolved_at": "2026-10-17T17:45:22.897800+00:00",
-    }
+    "incident_id": "INC-001",
+    "component": "dynamodb",
+    "status": "RESOLVED",
+    "opened_at": "2026-10-17T17:45:06.761327+00:00",
+    "resolved_at": "2026-10-17T17:45:22.897800+00:00",
+}
 
     alert_history = [
         {

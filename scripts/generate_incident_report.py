@@ -131,24 +131,32 @@ def build_recovery_history(alert_history):
 
 
 def is_recovery_verified(incident, recovery_events):
-    """Verify that a resolved incident matches a recorded recovery event."""
+    """Verify recovery evidence and validate incident chronology."""
 
     if incident.get("status") != "RESOLVED":
         return False
 
+    opened_at = parse_timestamp(incident.get("opened_at"))
     resolved_at = parse_timestamp(incident.get("resolved_at"))
 
-    if resolved_at is None:
+    # Both timestamps must be valid.
+    if opened_at is None or resolved_at is None:
         return False
 
-    key = (
-        incident.get("component", "unknown"),
-        incident.get("incident_id"),
-    )
+    # An incident cannot be resolved before it was opened.
+    if resolved_at < opened_at:
+        return False
 
+    incident_id = incident.get("incident_id")
+    component = incident.get("component", "unknown")
+
+    if not incident_id:
+        return False
+
+    key = (component, incident_id)
+
+    # A matching recorded resolution event is required.
     return resolved_at in recovery_events.get(key, set())
-
-
 def calculate_duration(incident, now):
     """Calculate incident duration in seconds."""
 
