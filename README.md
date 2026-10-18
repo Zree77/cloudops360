@@ -1,51 +1,160 @@
 # CloudOps360 — Cloud Incident Detection and Monitoring
 
-CloudOps360 is a cloud-native incident detection and monitoring project built using Python, AWS services, and automated CI/CD. It processes application and AWS Lambda logs, identifies error patterns, tracks incidents, and verifies recovery using subsequent application events.
+CloudOps360 is a cloud operations and incident monitoring project that combines a serverless REST API, AWS CloudWatch log analysis, automated incident detection, recovery verification, and Amazon SNS email notifications.
 
-The project demonstrates practical DevOps skills in cloud deployment, automated testing, centralized logging, incident management, and CI/CD automation.
+The project also includes a containerized observability stack using Prometheus, Grafana Alloy, Loki, and Grafana to monitor application metrics and logs.
+
+The goal is to demonstrate practical DevOps and cloud engineering workflows, including CI/CD automation, automated testing, cloud monitoring, incident reporting, and notification delivery.
+
+---
+
+## Table of Contents
+
+- [Project Overview](#project-overview)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Technology Stack](#technology-stack)
+- [Project Structure](#project-structure)
+- [AWS Deployment](#aws-deployment)
+- [API Endpoints](#api-endpoints)
+- [Incident Detection and Recovery](#incident-detection-and-recovery)
+- [Amazon SNS Notifications](#amazon-sns-notifications)
+- [CI/CD Pipeline](#cicd-pipeline)
+- [Local Observability Stack](#local-observability-stack)
+- [Testing](#testing)
+- [Screenshots](#screenshots)
+- [Security Considerations](#security-considerations)
+- [Current Project Status](#current-project-status)
+- [Future Enhancements](#future-enhancements)
+- [Author](#author)
+
+---
+
+## Project Overview
+
+CloudOps360 brings together cloud application deployment, monitoring, and incident response workflows.
+
+The project has two main parts:
+
+1. **AWS serverless application:** A FastAPI application deployed to AWS Lambda and exposed through Amazon API Gateway. AWS services support application data storage, log collection, incident detection, and notifications.
+2. **Local observability environment:** A Docker Compose stack that collects application metrics and logs and makes them available through Prometheus and Grafana.
+
+When the incident detection workflow identifies a qualifying issue in CloudWatch logs, it generates an incident record and can publish an email notification through Amazon SNS.
+
+The project also includes automated tests and a GitHub Actions workflow for testing and deployment.
+
+## Features
+
+### 1. Serverless REST API
+
+- FastAPI application deployed on AWS Lambda.
+- Amazon API Gateway integration.
+- Health check and application information endpoints.
+- Task-related API endpoints.
+- Mangum integration for running FastAPI through AWS Lambda.
+
+### 2. Cloud Incident Detection
+
+- Retrieves application logs from Amazon CloudWatch Logs.
+- Analyzes logs for potential errors and incidents.
+- Generates incident reports with identifiers, affected components, status, and error counts.
+- Supports incident notification through Amazon SNS.
+
+### 3. Recovery Verification
+
+- Includes recovery verification logic.
+- Tests incident and recovery-related behavior.
+- Helps validate whether an incident's recovery conditions have been satisfied.
+
+### 4. Email Notifications
+
+- Integrates Amazon SNS with the incident detection workflow.
+- Publishes incident notifications containing relevant incident details.
+- Email delivery has been verified using a received SNS notification.
+
+### 5. Application Observability
+
+- Prometheus collects application metrics.
+- Grafana Alloy collects and forwards application logs.
+- Loki stores and serves logs.
+- Grafana provides dashboards for application metrics and logs.
+- Includes configured alert rules for API availability and high server-error rates.
+
+### 6. Automated Testing
+
+- Pytest-based test suite.
+- Tests API behavior and incident-related functionality.
+- Includes notification deduplication tests.
+
+### 7. CI/CD Automation
+
+- GitHub Actions workflow.
+- Automated test execution.
+- Lambda deployment packaging.
+- AWS authentication using OpenID Connect (OIDC).
+- Automated deployment to AWS Lambda.
+- Post-deployment API health check.
+
+---
 
 ## Architecture
 
-```text
-                    Developer
-                        |
-                        v
-                  GitHub Repository
-                        |
-                        v
-                 GitHub Actions
-                        |
-                 Run Automated Tests
-                        |
-                        v
-                  Deploy to AWS
-                        |
-                        v
-                 Amazon API Gateway
-                        |
-                        v
-                    AWS Lambda
-                        |
-              +---------+---------+
-              |                   |
-              v                   v
-         Amazon DynamoDB     Amazon CloudWatch
-              |                   |
-              v                   v
-         Task Storage         Application Logs
-                                  |
-                                  v
-                         CloudWatch Log Retrieval
-                                  |
-                                  v
-                         Log Analysis and Filtering
-                                  |
-                                  v
-                          Incident Detection
-                                  |
-                                  v
-                       Incident State and Reports
+CloudOps360 separates its AWS deployment from its local observability environment.
+
+### AWS Application and Incident Detection
+
+```mermaid
+flowchart TD
+    DEV[Developer]
+    GH[GitHub Repository]
+    GA[GitHub Actions]
+    LAMBDA[AWS Lambda - FastAPI]
+    API[Amazon API Gateway]
+    DB[Amazon DynamoDB]
+    CW[Amazon CloudWatch Logs]
+    DETECT[Incident Detection Workflow]
+    REPORT[Incident Report]
+    SNS[Amazon SNS]
+    EMAIL[Email Notification]
+
+    DEV --> GH
+    GH --> GA
+    GA --> LAMBDA
+
+    CLIENT[API Client] --> API
+    API --> LAMBDA
+    LAMBDA --> DB
+    LAMBDA --> CW
+
+    CW --> DETECT
+    DETECT --> REPORT
+    DETECT --> SNS
+    SNS --> EMAIL
 ```
+
+### Local Observability Environment
+
+```mermaid
+flowchart TD
+    APP[Containerized FastAPI Application]
+    PROM[Prometheus]
+    ALLOY[Grafana Alloy]
+    LOKI[Loki]
+    GRAFANA[Grafana Dashboards]
+    ALERTS[Configured Grafana Alert Rules]
+
+    APP -->|Application Metrics| PROM
+    APP -->|Application Logs| ALLOY
+    ALLOY --> LOKI
+
+    PROM --> GRAFANA
+    LOKI --> GRAFANA
+    PROM --> ALERTS
+```
+
+**Architecture note:** The local Prometheus and Grafana stack monitors the containerized application. It is separate from the deployed AWS Lambda application and does not automatically monitor Lambda unless an additional integration is configured.
+
+---
 
 ## Technology Stack
 
@@ -53,337 +162,574 @@ The project demonstrates practical DevOps skills in cloud deployment, automated 
 |---|---|
 | Programming Language | Python |
 | API Framework | FastAPI |
-| Cloud Platform | Amazon Web Services |
 | Serverless Compute | AWS Lambda |
 | API Management | Amazon API Gateway |
 | Database | Amazon DynamoDB |
-| Logging | Amazon CloudWatch Logs |
-| Testing | pytest |
-| CI/CD | GitHub Actions |
-| Version Control | Git and GitHub |
-| AWS Integration | Boto3 |
+| Cloud Logging | Amazon CloudWatch Logs |
+| Notifications | Amazon SNS |
+| AWS SDK | Boto3 |
 | Lambda Adapter | Mangum |
+| Metrics Collection | Prometheus |
+| Log Collection | Grafana Alloy |
+| Log Storage | Loki |
+| Dashboards and Alert Rules | Grafana |
+| Containerization | Docker |
+| Container Orchestration | Docker Compose |
+| CI/CD | GitHub Actions |
+| Authentication for Deployment | AWS IAM and GitHub Actions OIDC |
+| Testing | Pytest |
+| Version Control | Git and GitHub |
 
-## Features
-
-### 1. Serverless REST API
-
-- Built using FastAPI.
-- Deployed to AWS Lambda.
-- Exposed through Amazon API Gateway.
-- Provides health and readiness endpoints.
-- Supports task creation, retrieval, updating, and deletion.
-
-### 2. DynamoDB Integration
-
-- Stores application task records.
-- Integrates with the FastAPI application through AWS services.
-- Uses AWS IAM permissions to control access.
-
-### 3. CloudWatch Log Processing
-
-- Retrieves application and Lambda system logs from CloudWatch.
-- Normalizes retrieved events into JSON Lines files.
-- Analyzes application errors and warnings.
-- Identifies relevant AWS Lambda runtime failure patterns.
-
-### 4. Incident Detection
-
-- Identifies recurring errors within a configurable time window.
-- Uses an error threshold to determine when an incident should be opened.
-- Tracks incident state and supporting evidence.
-- Prevents duplicate incident creation for an already-open incident.
-- Uses stable identifiers for incident tracking.
-
-### 5. Incident Recovery Verification
-
-- Identifies successful application events that may indicate recovery.
-- Matches recovery evidence against the affected component and operation.
-- Avoids resolving incidents based on stale or unrelated recovery events.
-- Records incident lifecycle events.
-- Generates incident reports that distinguish verified recovery from unverified recovery.
-
-### 6. Automated Testing
-
-- Uses pytest for automated testing.
-- Covers API behavior and incident detection.
-- Tests incident lifecycle and recovery verification scenarios.
-
-### 7. CI/CD Automation
-
-- Uses GitHub Actions to automate testing and deployment.
-- Runs automated tests before deployment.
-- Deploys the application to AWS Lambda.
-- Performs deployment smoke tests.
+---
 
 ## Project Structure
 
+The following represents the main project organization. Adjust filenames if your local repository differs.
+
 ```text
 cloudops360/
+├── .github/
+│   └── workflows/
+│       └── deploy.yml
+│
 ├── app/
-│   ├── main.py
-│   └── logging_config.py
+│   └── main.py
+│
 ├── scripts/
-│   ├── simulate_incident.py
-│   ├── analyze_logs.py
-│   ├── detect_incidents.py
-│   ├── generate_incident_report.py
 │   ├── fetch_cloudwatch_logs.py
 │   ├── analyze_cloudwatch_logs.py
-│   └── detect_cloudwatch_incidents.py
+│   ├── detect_cloudwatch_incidents.py
+│   └── generate_incident_report.py
+│
 ├── tests/
-│   ├── test_main.py
-│   ├── test_detect_incidents.py
-│   ├── test_generate_incident_report.py
-│   └── test_detect_cloudwatch_incidents.py
+│   └── ...
+│
+├── observability/
+│   ├── prometheus/
+│   │   └── prometheus.yml
+│   └── grafana/
+│       └── provisioning/
+│           └── alerting/
+│               └── alert_rules.yaml
+│
+├── docs/
+│   └── images/
+│       ├── github-actions-deployment.png
+│       ├── api-health-check.png
+│       ├── grafana-observability-dashboard.png
+│       ├── incident-detection-report.png
+│       └── sns-incident-notification.png
+│
 ├── logs/
-├── pytest.ini
 ├── requirements.txt
+├── lambda_requirements.txt
+├── compose.yml
+├── Dockerfile
+├── pytest.ini
 └── README.md
 ```
 
-*Note: The structure above describes the main project files; the exact contents of individual directories may evolve.*
+**Important:** Keep only files and directories that actually exist in your repository. The `tests/` directory may contain multiple test modules.
 
-## Prerequisites
+---
 
-- Python 3.12
-- Git
-- An AWS account
-- AWS CLI
-- Configured AWS credentials with appropriate permissions
-- An AWS Lambda deployment and API Gateway endpoint
+## AWS Deployment
 
-## Local Setup
+### Deployed Resources
 
-### 1. Clone the repository
+The AWS deployment uses the following components:
 
-```bash
-git clone https://github.com/Zree77/cloudops360.git
-cd cloudops360
+- **AWS Lambda:** Runs the FastAPI application.
+- **Amazon API Gateway:** Exposes the application through an HTTP API endpoint.
+- **Amazon DynamoDB:** Provides application data storage.
+- **Amazon CloudWatch Logs:** Collects application logs.
+- **Amazon SNS:** Publishes incident notifications.
+- **GitHub Actions:** Automates testing and Lambda deployment.
+
+### Deployed API
+
+**API Base URL:**
+
+https://tktticigxk.execute-api.ap-south-1.amazonaws.com
+
+**Health Check:**
+
+https://tktticigxk.execute-api.ap-south-1.amazonaws.com/health
+
+**Application Root:**
+
+https://tktticigxk.execute-api.ap-south-1.amazonaws.com/
+
+**API Documentation:**
+
+https://tktticigxk.execute-api.ap-south-1.amazonaws.com/docs
+
+The root and health endpoints have been tested successfully and returned HTTP 200 responses.
+
+### Health Check Response
+
+Example:
+
+```json
+{
+  "status": "healthy",
+  "application": "CloudOps360"
+}
 ```
 
-### 2. Create a virtual environment
+### Application Root Response
 
-Windows PowerShell:
+Example:
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+```json
+{
+  "application": "CloudOps360",
+  "message": "Welcome to CloudOps360 API",
+  "docs": "/docs"
+}
 ```
 
-### 3. Install dependencies
-
-```powershell
-python -m pip install -r requirements.txt
-```
-
-### 4. Run automated tests
-
-```powershell
-pytest -q
-```
-
-The latest recorded local test run completed with 35 passing tests and two dependency deprecation warnings.
-
-## AWS Configuration
-
-The deployed project uses AWS Lambda, API Gateway, DynamoDB, and CloudWatch Logs.
-
-Before running AWS integration scripts:
-
-1. Configure AWS CLI credentials.
-2. Verify access to the intended AWS account.
-3. Select the correct AWS region.
-4. Ensure the IAM identity has the required permissions.
-5. Confirm that the target Lambda function and CloudWatch log group exist.
-
-Do not commit AWS access keys, secrets, environment files containing credentials, or Terraform state files to GitHub.
+---
 
 ## API Endpoints
 
-The application provides the following endpoints:
+The following endpoints are documented for the application.
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| GET | `/` | Root endpoint |
-| GET | `/health` | Application health check |
-| GET | `/ready` | Readiness check |
-| POST | `/tasks` | Create a task |
-| GET | `/tasks` | Retrieve tasks |
-| GET | `/tasks/{task_id}` | Retrieve a task |
-| PATCH | `/tasks/{task_id}` | Update a task |
-| DELETE | `/tasks/{task_id}` | Delete a task |
+| GET | `/` | Returns application information |
+| GET | `/health` | Checks application health |
+| GET | `/ready` | Checks application readiness |
+| GET | `/docs` | Opens the FastAPI Swagger documentation |
+| GET | `/tasks` | Lists tasks |
+| POST | `/tasks` | Creates a task |
+| GET | `/tasks/{task_id}` | Retrieves a task |
+| PUT | `/tasks/{task_id}` | Updates a task |
+| DELETE | `/tasks/{task_id}` | Deletes a task |
 
-Use the deployed API Gateway endpoint or run the application locally to access the API.
+The exact task operations depend on the routes implemented in the current application version.
 
-## CloudWatch Log Processing
+---
 
-The CloudWatch workflow consists of three primary operations.
+## Incident Detection and Recovery
 
-### Retrieve logs
+CloudOps360 includes scripts for retrieving CloudWatch logs, analyzing errors, detecting incidents, and generating incident reports.
+
+### Workflow
+
+1. Retrieve relevant logs from Amazon CloudWatch Logs.
+2. Analyze the collected log entries.
+3. Identify potential incidents based on the implemented detection logic.
+4. Generate incident information, including the incident identifier, affected component, status, and error count.
+5. Publish an SNS notification when the notification workflow is triggered.
+6. Validate incident and recovery behavior through automated tests.
+
+### Relevant Scripts
+
+| Script | Purpose |
+|---|---|
+| `scripts/fetch_cloudwatch_logs.py` | Retrieves CloudWatch log data |
+| `scripts/analyze_cloudwatch_logs.py` | Analyzes collected logs |
+| `scripts/detect_cloudwatch_incidents.py` | Detects incidents and triggers the notification workflow |
+| `scripts/generate_incident_report.py` | Generates an incident report |
+
+Run scripts from the project root using the Python environment configured for your project.
+
+For example:
 
 ```powershell
 python scripts/fetch_cloudwatch_logs.py
 ```
 
-Retrieves CloudWatch log events and saves normalized events locally.
-
-### Analyze logs
-
 ```powershell
 python scripts/analyze_cloudwatch_logs.py
 ```
-
-Summarizes retrieved logs, including application events, Lambda system events, errors, and warnings.
-
-### Detect incidents
 
 ```powershell
 python scripts/detect_cloudwatch_incidents.py
 ```
 
-Processes retrieved CloudWatch events, evaluates error thresholds, and updates incident state and alert history.
-
-Run the scripts from the project root. The AWS scripts require appropriate AWS credentials and permissions.
-
-## Incident Reports
-
-Generate a report from the local incident history:
-
 ```powershell
 python scripts/generate_incident_report.py
 ```
 
-The report summarizes incident counts, resolution status, and recovery verification.
+The scripts may require AWS credentials, suitable IAM permissions, and the expected CloudWatch configuration.
 
-The project distinguishes simulated/local incident data from data retrieved from AWS CloudWatch.
+Review the configuration and script arguments before running them. Do not commit AWS credentials or other secrets to the repository.
 
-## CI/CD Workflow
+---
 
-The GitHub Actions workflow automates the following stages:
+## Amazon SNS Notifications
 
-1. Check out the repository.
-2. Set up Python.
-3. Install dependencies.
-4. Run automated tests.
-5. Package the application for AWS Lambda.
-6. Deploy the application.
-7. Execute a deployment smoke test.
+CloudOps360 integrates Amazon Simple Notification Service (SNS) into its incident detection workflow.
 
-Deployment behavior depends on the workflow configuration and its trigger conditions.
+When a qualifying incident is detected, the workflow can publish an email notification through the configured SNS topic.
 
-## Security Considerations
+The notification contains details such as:
 
-- Follow the principle of least privilege when configuring IAM.
-- Store deployment credentials securely.
-- Prefer GitHub Actions OIDC for AWS authentication where configured.
-- Avoid exposing sensitive application data in logs.
-- Review API authentication and authorization before exposing task-management endpoints publicly.
-- Monitor AWS usage and remove unused resources to control costs.
+- Incident ID
+- Affected component
+- Incident status
+- Error count
+- Incident opening timestamp
 
-## Observability, Monitoring, and Alerting
-
-CloudOps360 includes a full, containerized local and edge observability stack composed of **Prometheus**, **Loki**, **Grafana Alloy**, and **Grafana**:
+### Example Incident
 
 ```text
-                     CloudOps360 FastAPI
-                              |
-                   +----------+----------+
-                   |                     |
-              Application Logs       Prometheus Metrics (/metrics)
-                   |                     |
-              Grafana Alloy          Prometheus
-                   |                     |
-                   v                     v
-                 Loki  ----------->   Grafana (Dashboards & Alerts)
+Application: CloudOps360
+Incident ID: CW-20261018T130424-6E88DE8DA9
+Component: dynamodb
+Status: OPEN
+Errors: 2
 ```
 
-### 1. Prometheus Metrics Collection
+The incident notification was received by email from AWS Notifications, confirming successful email delivery for the tested incident.
 
-The FastAPI application instruments HTTP requests with `prometheus_client` middleware:
-* `cloudops360_http_requests_total`: Counter tracking total requests by `method`, `endpoint`, and `status_code`.
-* `cloudops360_http_request_duration_seconds`: Histogram measuring response latency across bucket boundaries (`0.005s` to `10.0s`).
+### Incident Email Screenshot
 
-### 2. 95th-Percentile Latency Calculation
+![CloudOps360 Amazon SNS incident notification](docs/images/sns-incident-notification.png)
 
-Accurate 95th-percentile API latency is calculated in Prometheus using:
+---
+
+## CI/CD Pipeline
+
+CloudOps360 uses GitHub Actions to automate testing and deployment.
+
+### Pipeline Workflow
+
+1. A change is pushed to the GitHub repository.
+2. GitHub Actions runs the configured workflow.
+3. Python dependencies required for testing are installed.
+4. Automated tests are executed.
+5. Lambda deployment dependencies are installed from `lambda_requirements.txt`.
+6. The application and its dependencies are packaged for Lambda.
+7. GitHub Actions authenticates with AWS using the configured OIDC role.
+8. The deployment job updates the AWS Lambda function.
+9. The workflow checks the deployed API health endpoint.
+
+The workflow separates test dependencies from the dependencies packaged for Lambda.
+
+### Deployment Configuration
+
+The workflow is located at:
+
+```text
+.github/workflows/deploy.yml
+```
+
+The deployed Lambda function is:
+
+```text
+cloudops360-dev-api
+```
+
+The AWS region is:
+
+```text
+ap-south-1
+```
+
+### CI/CD Screenshot
+
+![Successful CloudOps360 GitHub Actions deployment](docs/images/github-actions-deployment.png)
+
+---
+
+## Local Observability Stack
+
+CloudOps360 includes a Docker Compose-based observability environment.
+
+The stack contains:
+
+| Component | Responsibility |
+|---|---|
+| FastAPI application | Exposes the application and metrics endpoint |
+| Prometheus | Collects and queries application metrics |
+| Grafana Alloy | Collects and forwards application logs |
+| Loki | Stores and queries application logs |
+| Grafana | Displays dashboards and configured alert rules |
+
+### Start the Stack
+
+Ensure Docker Desktop is running, then execute these commands from the project root:
+
+```powershell
+docker compose up -d --build
+```
+
+Check the running containers:
+
+```powershell
+docker compose ps
+```
+
+View container logs:
+
+```powershell
+docker compose logs -f
+```
+
+Stop the stack:
+
+```powershell
+docker compose down
+```
+
+To stop the stack and remove its named volumes, use:
+
+```powershell
+docker compose down -v
+```
+
+**Warning:** Removing volumes deletes the data stored in those volumes. Do not use `-v` if you need to retain the monitoring data.
+
+### Local Service URLs
+
+| Service | URL |
+|---|---|
+| Application | http://localhost:8000 |
+| Application Metrics | http://localhost:8000/metrics |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3000 |
+| Loki | http://localhost:3100 |
+| Grafana Alloy | http://localhost:12345 |
+
+The exact available endpoints and port mappings depend on the current `compose.yml` configuration.
+
+### Prometheus Metrics
+
+The application exposes metrics that Prometheus can scrape.
+
+Examples include:
+
+```text
+cloudops360_http_requests_total
+```
+
+This counter tracks HTTP requests by method, endpoint, and status code.
+
+```text
+cloudops360_http_request_duration_seconds
+```
+
+This histogram records HTTP request durations.
+
+Example PromQL queries:
+
+**Total HTTP requests**
 
 ```promql
-histogram_quantile(0.95, sum(rate(cloudops360_http_request_duration_seconds_bucket[5m])) by (le))
+sum(cloudops360_http_requests_total)
 ```
 
-* Retains the bucket threshold `by (le)` for valid quantile interpolation.
-* In Grafana, queries use `[$__rate_interval]` for dynamic time-range adaptation.
+**HTTP 5xx errors**
+
+```promql
+sum(cloudops360_http_requests_total{status_code=~"5.."})
+```
+
+**Requests per second**
+
+```promql
+sum(rate(cloudops360_http_requests_total[5m]))
+```
+
+**95th percentile request latency**
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le) (
+    rate(cloudops360_http_request_duration_seconds_bucket[5m])
+  )
+)
+```
+
+These queries depend on the corresponding metrics being exposed and scraped successfully.
+
+### Grafana Dashboard
+
+The dashboard includes panels for:
+
+- API availability
+- Total HTTP requests
+- Request rate
+- 95th percentile request latency
+- HTTP 4xx and 5xx errors
+- Application logs
+
+![CloudOps360 Grafana observability dashboard](docs/images/grafana-observability-dashboard.png)
+
+### Grafana Alert Rules
+
+The project includes configured alert rules for:
+
+- API unavailability
+- High HTTP 5xx server-error rates
+
+The rules are configured in:
+
+```text
+observability/grafana/provisioning/alerting/alert_rules.yaml
+```
+
+The presence of configured rules does not, by itself, confirm that notifications are being delivered. End-to-end Grafana alert notification delivery remains to be verified.
+
+---
+
+## Testing
+
+CloudOps360 uses Pytest to validate application behavior and incident-related functionality.
+
+### Run the Tests
+
+Create and activate a virtual environment if one is not already configured.
+
+On Windows PowerShell:
+
+```powershell
+python -m venv .venv
+```
+
+Activate it:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Install the project dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+Run the tests:
+
+```powershell
+python -m pytest tests -v
+```
+
+### Latest Test Results
+
+The latest recorded test run completed successfully:
+
+```text
+38 passed, 2 warnings
+```
+
+The test suite includes checks for:
+
+- API behavior
+- Incident detection
+- Recovery verification
+- SNS notification deduplication
+
+The two warnings concerned Starlette/httpx test-client deprecation and Mangum asyncio event-loop deprecation. They did not cause the recorded test run to fail.
+
+Test results may change as the project evolves.
+
+---
+
+## Screenshots
+
+The following screenshots document the implemented and tested parts of CloudOps360.
+
+### 1. GitHub Actions Deployment
+
+Shows the successful CI/CD workflow used to test and deploy the application.
+
+![GitHub Actions deployment](docs/images/github-actions-deployment.png)
+
+### 2. API Health Check
+
+Shows the deployed API returning a successful health check response.
+
+![CloudOps360 API health check](docs/images/api-health-check.png)
 
 ### 3. Grafana Observability Dashboard
 
-Pre-provisioned automatically at startup under the **CloudOps360** folder (`UID: cloudops360-observability`) with 6 dedicated panels:
-1. **API Availability**: Single-stat indicator (`up{job="cloudops360-api"}`) showing real-time `UP` (green) or `DOWN` (red) health.
-2. **Total HTTP Requests**: Lifetime processed request count.
-3. **Requests per Second**: Throughput time series broken down by method and route.
-4. **95th-Percentile API Latency**: Response duration time series with smooth interpolation.
-5. **HTTP 4xx/5xx Errors**: Stacked error rate visualization.
-6. **Application Logs**: Live Loki log stream captured by Grafana Alloy (`{container="cloudops360-api"}`).
+Shows application metrics, request information, latency, and logs in Grafana.
 
-### 4. Grafana Alerting Rules
+![CloudOps360 Grafana dashboard](docs/images/grafana-observability-dashboard.png)
 
-Provisioned via `observability/grafana/provisioning/alerting/alert_rules.yaml`:
-* **API Unavailable Alert**: Evaluates `up{job="cloudops360-api"} < 1` (fires Critical alert within 30s of API downtime).
-* **High 5xx Errors Alert**: Evaluates `rate(cloudops360_http_requests_total{status_code=~"5.."}[1m]) > 0` (fires Warning alert on server errors).
+### 4. Incident Detection Report
 
-### 5. Running the Monitoring Stack
+Shows the incident report generated by CloudOps360.
 
-Start the entire environment with Docker Compose:
+![CloudOps360 incident detection report](docs/images/incident-detection-report.png)
 
-```powershell
-docker compose up -d
-```
+### 5. Amazon SNS Incident Notification
 
-Service endpoints:
-* **FastAPI Application**: [http://localhost:8000](http://localhost:8000)
-* **Prometheus UI**: [http://localhost:9090](http://localhost:9090)
-* **Grafana Dashboard**: [http://localhost:3000](http://localhost:3000)
-* **Grafana Alloy**: [http://localhost:12345](http://localhost:12345)
-* **Loki API**: [http://localhost:3100](http://localhost:3100)
+Shows the incident notification received through Amazon SNS.
 
-### 6. Failure Scenario Validation
+![CloudOps360 SNS incident email](docs/images/sns-incident-notification.png)
 
-Run the end-to-end failure verification suite:
+---
 
-```powershell
-python scripts/test_failure_scenarios.py
-```
+## Security Considerations
 
-This verifies:
-1. HTTP 4xx validation errors.
-2. Histogram latency capture under traffic.
-3. API downtime reaction: container stop triggers `up == 0`, and container recovery restores `up == 1`.
+The project is intended for learning and demonstration purposes. Before using it in a production environment, consider the following:
 
-## Current Status
+- Store AWS credentials and application secrets securely.
+- Use IAM roles and least-privilege permissions.
+- Use GitHub Actions OIDC rather than long-lived AWS access keys for CI/CD authentication.
+- Keep API Gateway, Lambda, DynamoDB, and SNS permissions appropriately restricted.
+- Avoid committing `.env` files, private keys, AWS credentials, or sensitive logs.
+- Redact email addresses and subscription URLs from public screenshots.
+- Configure authentication and authorization for endpoints that modify application data.
+- Review CloudWatch log retention and data exposure.
+- Configure appropriate alert routing and incident escalation policies.
+- Monitor AWS resource usage and costs.
 
-The project has implemented and validated:
+---
 
-- A FastAPI application deployed on AWS Lambda & Docker.
-- API Gateway integration.
-- DynamoDB-backed task operations.
-- CloudWatch log retrieval, classification, and incident management.
-- Centralized log aggregation via Loki and Grafana Alloy.
-- Metric instrumentation, scraping, and quantile analysis via Prometheus.
-- Pre-provisioned Grafana observability dashboards and automated alerting rules.
-- Automated tests passing **38 of 38 tests**.
-- GitHub Actions CI/CD deployment pipeline.
+## Current Project Status
+
+| Component | Status |
+|---|---|
+| FastAPI application | Implemented |
+| AWS Lambda deployment | Deployed |
+| API Gateway integration | Deployed and tested |
+| Root endpoint | HTTP 200 verified |
+| Health endpoint | HTTP 200 verified |
+| DynamoDB integration | Used by the application |
+| CloudWatch log analysis | Implemented |
+| Incident detection | Implemented |
+| Recovery verification | Implemented and covered by tests |
+| Amazon SNS integration | Implemented |
+| SNS email delivery | Verified for a test incident |
+| GitHub Actions CI/CD | Successful deployment verified |
+| Automated test suite | 38 tests passed in the latest recorded run |
+| Prometheus metrics | Configured and scraped successfully |
+| Grafana Alloy and Loki | Configured for local log collection |
+| Grafana dashboard | Created and populated with application data |
+| Grafana alert rules | Configured |
+| Grafana alert notification delivery | Not yet verified end to end |
+| Automatic Lambda monitoring through the local stack | Not configured |
+
+---
 
 ## Future Enhancements
 
-- Amazon SNS incident notifications.
-- Extended multi-region Terraform deployment.
-- MTTD and MTTR tracking automation.
-- Distributed tracing with OpenTelemetry / Tempo.
+Potential next steps include:
+
+- Verify Grafana alert notification delivery and recovery notifications.
+- Integrate AWS Lambda metrics and logs into a unified observability view.
+- Add incident severity classification and escalation policies.
+- Track Mean Time to Detect (MTTD) and Mean Time to Recover (MTTR).
+- Provision AWS infrastructure using Terraform.
+- Add distributed tracing using OpenTelemetry.
+- Expand integration testing for incident and recovery workflows.
+
+---
 
 ## Author
 
 **Sreehari S.**
 
-GitHub: https://github.com/Zree77
+- GitHub: [@Zree77](https://github.com/Zree77)
+- Project Repository: [CloudOps360](https://github.com/Zree77/cloudops360)
 
-Project: [CloudOps360](https://github.com/Zree77/cloudops360)
+---
+
+*CloudOps360 — Automating cloud monitoring, incident detection, and operational visibility.*
