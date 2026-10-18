@@ -32,7 +32,6 @@ def load_jsonl(path):
 
             try:
                 record = json.loads(line)
-
             except json.JSONDecodeError:
                 print(
                     f"Warning: skipping malformed JSON in "
@@ -92,7 +91,6 @@ def save_state(state):
     """Atomically save CloudWatch incident state."""
 
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-
     temporary_file = STATE_FILE.with_suffix(".tmp")
 
     with temporary_file.open("w", encoding="utf-8") as file:
@@ -117,12 +115,7 @@ def incident_key(component, fingerprint):
 
 
 def generate_incident_id(key, timestamp):
-    """
-    Generate a deterministic incident ID.
-
-    The SHA-256 suffix is stable for the same incident key.
-    The timestamp distinguishes incidents opened at different times.
-    """
+    """Generate a deterministic incident ID."""
 
     timestamp_part = timestamp.strftime("%Y%m%dT%H%M%S")
     hash_part = hashlib.sha256(
@@ -133,10 +126,7 @@ def generate_incident_id(key, timestamp):
 
 
 def classify_error(event):
-    """
-    Classify application errors and AWS Lambda runtime failures
-    from normalized CloudWatch events.
-    """
+    """Classify application errors and AWS Lambda runtime failures."""
 
     if event.get("source") != "cloudwatch":
         return None
@@ -145,7 +135,7 @@ def classify_error(event):
     message = str(event.get("message", "Unknown error"))
     component = str(event.get("component", "cloudops360-api"))
 
-    # Case 1: Existing structured application errors.
+    # Structured application errors.
     if log_type == "application":
         if str(event.get("level", "")).upper() != "ERROR":
             return None
@@ -159,7 +149,7 @@ def classify_error(event):
             "message": message,
         }
 
-    # Case 2: AWS Lambda runtime failures in plain-text system events.
+    # Plain-text Lambda runtime failures.
     if log_type == "lambda_system":
         normalized_message = message.lower()
 
@@ -193,6 +183,47 @@ def classify_error(event):
 
     return None
 
+
+def classify_recovery(event):
+    """
+    Classify explicit successful application events as recovery evidence.
+
+    A recovery must identify the same component and operation as the
+    incident and must occur after the latest known error.
+    """
+
+    if event.get("source") != "cloudwatch":
+        return None
+
+    if event.get("log_type") != "application":
+        return None
+
+    level = str(event.get("level", "")).upper()
+    status = str(event.get("status", "")).lower()
+    message = str(event.get("message", "")).lower()
+
+    is_success = (
+        level == "INFO"
+        and (
+            status in {"success", "healthy", "ok"}
+            or "operation succeeded" in message
+            or "operation successful" in message
+        )
+    )
+
+    if not is_success:
+        return None
+
+    component = str(event.get("component", "cloudops360-api"))
+    operation = str(event.get("operation", "unknown"))
+
+    return {
+        "component": component,
+        "fingerprint": f"{component}:{operation}",
+        "message": str(event.get("message", "Operation succeeded")),
+    }
+
+
 def main():
     if ERROR_THRESHOLD < 1:
         raise SystemExit("CLOUDWATCH_ERROR_THRESHOLD must be at least 1.")
@@ -208,27 +239,50 @@ def main():
     state = load_state()
     incidents = state["incidents"]
 
-    # Analyze actual normalized CloudWatch application ERROR events.
     timestamped_errors = []
+    timestamped_recoveries = []
 
+    # Classify error and recovery events from the normalized log snapshot.
     for event in events:
-        classification = classify_error(event)
-
-        if classification is None:
-            continue
-
         timestamp = parse_timestamp(event.get("timestamp"))
 
         if timestamp is None or timestamp > now:
             continue
 
-        timestamped_errors.append(
-            (timestamp, event, classification)
-        )
+        error_classification = classify_error(event)
+
+        if error_classification is not None:
+            timestamped_errors.append(
+                (timestamp, event, error_classification)
+            )
+            continue
+
+        recovery_classification = classify_recovery(event)
+
+        if recovery_classification is not None:
+            timestamped_recoveries.append(
+                (timestamp, event, recovery_classification)
+            )
 
     timestamped_errors.sort(key=lambda item: item[0])
+    timestamped_recoveries.sort(key=lambda item: item[0])
 
-    # Count errors by component and operation within the time window.
+    # Index all observed errors by incident key. This includes errors
+    # below the opening threshold, so they cannot be ignored during recovery.
+    latest_observed_error = {}
+
+    for timestamp, _, classification in timestamped_errors:
+        key = incident_key(
+            classification["component"],
+            classification["fingerprint"],
+        )
+
+        previous = latest_observed_error.get(key)
+
+        if previous is None or timestamp > previous:
+            latest_observed_error[key] = timestamp
+
+    # Count errors by component and operation inside the detection window.
     recent_errors = defaultdict(list)
 
     for timestamp, event, classification in timestamped_errors:
@@ -252,25 +306,30 @@ def main():
 
     opened_count = 0
     updated_count = 0
+    resolved_this_run = 0
 
+    # Open new incidents or update existing incidents.
     for key, records in qualifying.items():
         latest_timestamp, _, classification = records[-1]
-
         incident = incidents.get(key)
 
-        # Update an existing open incident without duplicating its alert.
         if incident and incident.get("status") == "OPEN":
             incident["last_error_at"] = latest_timestamp.isoformat()
             incident["error_count"] = len(records)
+            incident["evidence"] = [
+                {
+                    "timestamp": timestamp.isoformat(),
+                    "message": item_classification["message"],
+                }
+                for timestamp, _, item_classification in records
+            ]
             updated_count += 1
             continue
 
-        # Do not reopen a resolved incident using errors that occurred
+        # Do not reopen a resolved incident with an error that occurred
         # before or at its recorded resolution time.
         if incident and incident.get("status") == "RESOLVED":
-            resolved_at = parse_timestamp(
-                incident.get("resolved_at")
-            )
+            resolved_at = parse_timestamp(incident.get("resolved_at"))
 
             if (
                 resolved_at is not None
@@ -279,10 +338,7 @@ def main():
                 continue
 
         incident = {
-            "incident_id": generate_incident_id(
-                key,
-                latest_timestamp,
-            ),
+            "incident_id": generate_incident_id(key, latest_timestamp),
             "source": "cloudwatch",
             "component": classification["component"],
             "fingerprint": classification["fingerprint"],
@@ -313,10 +369,66 @@ def main():
         opened_count += 1
 
         print(
-            f"OPENED: CloudWatch incident "
-            f"{incident['incident_id']} "
+            f"OPENED: CloudWatch incident {incident['incident_id']} "
             f"for {incident['component']} "
             f"({incident['error_count']} errors)"
+        )
+
+    # Resolve only with a matching explicit success event that occurs
+    # after the latest known error for that incident.
+    for key, incident in incidents.items():
+        if incident.get("status") != "OPEN":
+            continue
+
+        last_error_at = parse_timestamp(incident.get("last_error_at"))
+        observed_error_at = latest_observed_error.get(key)
+
+        if observed_error_at is not None and (
+            last_error_at is None or observed_error_at > last_error_at
+        ):
+            last_error_at = observed_error_at
+
+        if last_error_at is None:
+            continue
+
+        component = incident.get("component")
+        fingerprint = incident.get("fingerprint")
+
+        matching_recoveries = [
+            (timestamp, classification)
+            for timestamp, _, classification in timestamped_recoveries
+            if timestamp > last_error_at
+            and classification["component"] == component
+            and classification["fingerprint"] == fingerprint
+        ]
+
+        if not matching_recoveries:
+            continue
+
+        recovery_timestamp, recovery_classification = matching_recoveries[-1]
+
+        incident["status"] = "RESOLVED"
+        incident["resolved_at"] = recovery_timestamp.isoformat()
+        incident["resolution_evidence"] = {
+            "timestamp": recovery_timestamp.isoformat(),
+            "message": recovery_classification["message"],
+            "reason": (
+                "Matching successful application operation observed "
+                "after the latest known error."
+            ),
+        }
+
+        append_alert({
+            "timestamp": now.isoformat(),
+            "event": "INCIDENT_RESOLVED",
+            **incident,
+        })
+
+        resolved_this_run += 1
+
+        print(
+            f"RESOLVED: CloudWatch incident {incident['incident_id']} "
+            f"after verified operation recovery"
         )
 
     save_state(state)
@@ -326,20 +438,21 @@ def main():
         for incident in incidents.values()
     )
 
-    resolved_count = sum(
+    total_resolved_count = sum(
         incident.get("status") == "RESOLVED"
         for incident in incidents.values()
     )
 
     print("\n========== CLOUDWATCH INCIDENT DETECTION ==========")
     print(f"CloudWatch events loaded: {len(events)}")
-    print(f"Application error events: {len(timestamped_errors)}")
+    print(f"Application/runtime error events: {len(timestamped_errors)}")
     print(f"Error threshold: {ERROR_THRESHOLD}")
     print(f"Detection window: {WINDOW_MINUTES} minutes")
     print(f"New incidents opened: {opened_count}")
     print(f"Existing incidents updated: {updated_count}")
+    print(f"Incidents resolved this run: {resolved_this_run}")
     print(f"Open CloudWatch incidents: {open_count}")
-    print(f"Resolved CloudWatch incidents: {resolved_count}")
+    print(f"Resolved CloudWatch incidents: {total_resolved_count}")
     print(f"State file: {STATE_FILE}")
     print(f"Alert file: {ALERT_FILE}")
     print("===================================================\n")

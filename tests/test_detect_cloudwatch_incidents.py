@@ -251,3 +251,113 @@ def test_local_runtime_error_is_ignored():
     }
 
     assert detector.classify_error(event) is None
+
+def test_verified_recovery_resolves_open_incident(tmp_path, monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    events = [
+        make_error(now - timedelta(minutes=2)),
+        make_error(now - timedelta(minutes=1)),
+        {
+            "source": "cloudwatch",
+            "log_type": "application",
+            "level": "INFO",
+            "component": "dynamodb",
+            "operation": "get_task",
+            "status": "success",
+            "message": "Operation succeeded",
+            "timestamp": now.isoformat(),
+        },
+    ]
+
+    state_file, alert_file = prepare_files(tmp_path, monkeypatch, events)
+    detector.main()
+
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    incident = next(iter(state["incidents"].values()))
+
+    assert incident["status"] == "RESOLVED"
+    assert incident["resolved_at"] is not None
+
+    alerts = [
+        json.loads(line)
+        for line in alert_file.read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(a["event"] == "INCIDENT_OPENED" for a in alerts)
+    assert any(a["event"] == "INCIDENT_RESOLVED" for a in alerts)
+
+
+def test_incident_stays_open_without_recovery_evidence(tmp_path, monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    events = [
+        make_error(now - timedelta(minutes=2)),
+        make_error(now - timedelta(minutes=1)),
+    ]
+
+    state_file, _ = prepare_files(tmp_path, monkeypatch, events)
+    detector.main()
+
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    incident = next(iter(state["incidents"].values()))
+
+    assert incident["status"] == "OPEN"
+    assert incident["resolved_at"] is None
+
+
+def test_stale_recovery_does_not_resolve_incident(tmp_path, monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    events = [
+        {
+            "source": "cloudwatch",
+            "log_type": "application",
+            "level": "INFO",
+            "component": "dynamodb",
+            "operation": "get_task",
+            "status": "success",
+            "message": "Operation succeeded",
+            "timestamp": (now - timedelta(minutes=3)).isoformat(),
+        },
+        make_error(now - timedelta(minutes=2)),
+        make_error(now - timedelta(minutes=1)),
+    ]
+
+    state_file, _ = prepare_files(tmp_path, monkeypatch, events)
+    detector.main()
+
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    incident = next(iter(state["incidents"].values()))
+
+    assert incident["status"] == "OPEN"
+    assert incident["resolved_at"] is None
+
+
+def test_unrelated_operation_recovery_does_not_resolve_incident(
+    tmp_path, monkeypatch
+):
+    now = datetime.now(timezone.utc)
+
+    events = [
+        make_error(now - timedelta(minutes=2)),
+        make_error(now - timedelta(minutes=1)),
+        {
+            "source": "cloudwatch",
+            "log_type": "application",
+            "level": "INFO",
+            "component": "dynamodb",
+            "operation": "delete_task",
+            "status": "success",
+            "message": "Operation succeeded",
+            "timestamp": now.isoformat(),
+        },
+    ]
+
+    state_file, _ = prepare_files(tmp_path, monkeypatch, events)
+    detector.main()
+
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    incident = next(iter(state["incidents"].values()))
+
+    assert incident["status"] == "OPEN"
+    assert incident["resolved_at"] is None
