@@ -4,6 +4,8 @@ import os
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import boto3
+import portalocker
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -12,10 +14,23 @@ LOG_FILE = BASE_DIR / "logs" / "cloudwatch_logs.jsonl"
 # Keep real AWS incidents separate from simulated incidents.
 ALERT_FILE = BASE_DIR / "logs" / "cloudwatch_alerts.jsonl"
 STATE_FILE = BASE_DIR / "logs" / "cloudwatch_incident_state.json"
+LOCK_FILE = BASE_DIR / "logs" / "cloudwatch_incident_state.lock"
 
 ERROR_THRESHOLD = int(os.getenv("CLOUDWATCH_ERROR_THRESHOLD", "2"))
 WINDOW_MINUTES = int(os.getenv("CLOUDWATCH_WINDOW_MINUTES", "5"))
 
+SNS_TOPIC_ARN = os.getenv(
+    "CLOUDOPS360_SNS_TOPIC_ARN",
+    "arn:aws:sns:ap-south-1:658469473117:cloudops360-incident-alerts",
+)
+
+AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
+
+# SNS incident notifications are enabled by default. Set this environment
+# variable to "false" to suppress email notifications.
+SNS_NOTIFICATIONS_ENABLED = (
+    os.getenv("CLOUDOPS360_SNS_NOTIFICATIONS_ENABLED", "true").lower() == "true"
+)
 
 def load_jsonl(path):
     """Load JSONL records, skipping malformed entries."""
@@ -100,13 +115,29 @@ def save_state(state):
 
 
 def append_alert(event):
-    """Append an incident lifecycle event to CloudWatch alert history."""
+    """Append a lifecycle event once, using its stable incident identity.
 
+    The caller holds the detector lock. This makes retrying after a crash
+    between writing the alert log and saving state safe: the same lifecycle
+    event will not be appended a second time.
+    """
     ALERT_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    event_type = event.get("event")
+    incident_id = event.get("incident_id")
+
+    # Only deduplicate lifecycle events with stable identifiers. Other
+    # records retain normal append-only behavior.
+    if event_type in {"INCIDENT_OPENED", "INCIDENT_RESOLVED"} and incident_id:
+        for existing in load_jsonl(ALERT_FILE):
+            if (
+                existing.get("event") == event_type
+                and existing.get("incident_id") == incident_id
+            ):
+                return
 
     with ALERT_FILE.open("a", encoding="utf-8") as file:
         file.write(json.dumps(event, default=str) + "\n")
-
 
 def incident_key(component, fingerprint):
     """Build a stable key for an incident type."""
@@ -222,9 +253,43 @@ def classify_recovery(event):
         "fingerprint": f"{component}:{operation}",
         "message": str(event.get("message", "Operation succeeded")),
     }
+def send_incident_notification(incident):
+    """Send an SNS email when a new incident is opened."""
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return
+
+    if not SNS_NOTIFICATIONS_ENABLED:
+        print(
+            f"SNS notifications disabled. "
+            f"Skipping notification for {incident['incident_id']}."
+        )
+        return
+
+    sns = boto3.client("sns", region_name=AWS_REGION)
+
+    message = (
+        f"CloudOps360 detected a new incident.\n\n"
+        f"Incident ID: {incident['incident_id']}\n"
+        f"Component: {incident['component']}\n"
+        f"Status: {incident['status']}\n"
+        f"Errors: {incident['error_count']}\n"
+        f"Opened at: {incident['opened_at']}\n\n"
+        f"Please investigate the incident."
+    )
+
+    try:
+        sns.publish(
+            TopicArn=SNS_TOPIC_ARN,
+            Subject=f"CloudOps360 Incident: {incident['incident_id']}",
+            Message=message,
+        )
+        print(f"SNS notification sent for {incident['incident_id']}")
+
+    except Exception as exc:
+        print(f"WARNING: SNS notification failed: {exc}")
 
 
-def main():
+def process_incidents():
     if ERROR_THRESHOLD < 1:
         raise SystemExit("CLOUDWATCH_ERROR_THRESHOLD must be at least 1.")
 
@@ -366,13 +431,17 @@ def main():
             **incident,
         })
 
-        opened_count += 1
+        # Persist the incident before attempting external notification.
+        save_state(state)
 
+        opened_count += 1
         print(
             f"OPENED: CloudWatch incident {incident['incident_id']} "
             f"for {incident['component']} "
             f"({incident['error_count']} errors)"
         )
+
+        send_incident_notification(incident)
 
     # Resolve only with a matching explicit success event that occurs
     # after the latest known error for that incident.
@@ -456,6 +525,15 @@ def main():
     print(f"State file: {STATE_FILE}")
     print(f"Alert file: {ALERT_FILE}")
     print("===================================================\n")
+
+
+def main():
+    """Run incident detection under a process-wide file lock."""
+
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    with portalocker.Lock(str(LOCK_FILE), mode="a", timeout=60):
+        process_incidents()
 
 
 if __name__ == "__main__":

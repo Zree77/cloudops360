@@ -32,6 +32,7 @@ def prepare_files(tmp_path, monkeypatch, events):
 
     monkeypatch.setattr(detector, "ERROR_THRESHOLD", 2)
     monkeypatch.setattr(detector, "WINDOW_MINUTES", 5)
+    monkeypatch.setattr(detector, "send_incident_notification", lambda incident: None)
 
     return state_file, alert_file
 
@@ -361,3 +362,106 @@ def test_unrelated_operation_recovery_does_not_resolve_incident(
 
     assert incident["status"] == "OPEN"
     assert incident["resolved_at"] is None
+
+def test_repeated_execution_does_not_send_sns_notifications(
+    tmp_path, monkeypatch
+):
+    now = datetime.now(timezone.utc)
+
+    events = [
+        make_error(now - timedelta(minutes=2)),
+        make_error(now - timedelta(minutes=1)),
+    ]
+
+    state_file, alert_file = prepare_files(
+        tmp_path, monkeypatch, events
+    )
+
+    notifications = []
+
+    def fake_send_notification(incident):
+        notifications.append(incident["incident_id"])
+
+    monkeypatch.setattr(
+        detector,
+        "send_incident_notification",
+        fake_send_notification,
+    )
+
+    detector.main()
+    detector.main()
+
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    alerts = [
+        json.loads(line)
+        for line in alert_file.read_text(encoding="utf-8").splitlines()
+    ]
+
+    # Only one incident should exist after repeated execution.
+    assert len(state["incidents"]) == 1
+
+    # Exactly one SNS notification is sent when the incident first opens.
+    # The second run must not send a duplicate notification.
+    assert len(notifications) == 1
+
+    # Repeated execution must not create another opening alert.
+    assert sum(
+        alert["event"] == "INCIDENT_OPENED"
+        for alert in alerts
+    ) == 1
+
+def test_portalocker_serializes_separate_processes(tmp_path):
+    lock_path = tmp_path / "concurrency-test.lock"
+
+    worker_code = """
+import sys
+import time
+import portalocker
+
+lock_path = sys.argv[1]
+
+with portalocker.Lock(lock_path, mode="a", timeout=10):
+    print("LOCK_ACQUIRED", flush=True)
+    time.sleep(0.5)
+"""
+
+    first = subprocess.Popen(
+        [sys.executable, "-c", worker_code, str(lock_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    second = subprocess.Popen(
+        [sys.executable, "-c", worker_code, str(lock_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    first_stdout, first_stderr = first.communicate(timeout=15)
+    second_stdout, second_stderr = second.communicate(timeout=15)
+
+    assert first.returncode == 0, first_stderr
+    assert second.returncode == 0, second_stderr
+    assert first_stdout.count("LOCK_ACQUIRED") == 1
+    assert second_stdout.count("LOCK_ACQUIRED") == 1
+
+def test_append_alert_deduplicates_same_incident_lifecycle_event(tmp_path, monkeypatch):
+    alert_file = tmp_path / "cloudwatch_alerts.jsonl"
+    monkeypatch.setattr(detector, "ALERT_FILE", alert_file)
+
+    opened = {
+        "timestamp": "2026-10-18T00:00:00+00:00",
+        "event": "INCIDENT_OPENED",
+        "incident_id": "CW-20261018T000000-ABCDEF1234",
+        "status": "OPEN",
+    }
+
+    detector.append_alert(opened)
+    # A retry after a crash must not append the same opening event again.
+    detector.append_alert({**opened, "timestamp": "2026-10-18T00:01:00+00:00"})
+
+    rows = [json.loads(line) for line in alert_file.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["event"] == "INCIDENT_OPENED"
