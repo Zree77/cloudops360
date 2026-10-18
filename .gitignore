@@ -17,3 +17,4 @@ dynamodb-key.json
 
 # Generated application logs and incident state
 logs/
+.pytest_tmp/

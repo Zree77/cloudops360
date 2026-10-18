@@ -1,4 +1,5 @@
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Literal
@@ -6,15 +7,34 @@ from uuid import UUID, uuid4
 
 import boto3
 from botocore.exceptions import ClientError
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 from mangum import Mangum
 
+from prometheus_client import (
+    Counter,
+    Histogram,
+    generate_latest,
+    CONTENT_TYPE_LATEST,
+)
+from starlette.middleware.base import BaseHTTPMiddleware
+
 from app.logging_config import configure_logging
+
+
+# --------------------------------------------------
+# Logging configuration
+# --------------------------------------------------
 
 logger = configure_logging()
 
+
+# --------------------------------------------------
+# AWS configuration
+# --------------------------------------------------
+
 AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
+
 DYNAMODB_TABLE = os.getenv(
     "DYNAMODB_TABLE",
     "cloudops360-dev-tasks",
@@ -23,12 +43,30 @@ DYNAMODB_TABLE = os.getenv(
 # Use the standard AWS credential provider chain.
 # Locally, credentials can come from the AWS CLI.
 # On Lambda, credentials come from the execution role.
+
 dynamodb = boto3.resource(
     "dynamodb",
     region_name=AWS_REGION,
 )
 
 tasks_table = dynamodb.Table(DYNAMODB_TABLE)
+
+
+# --------------------------------------------------
+# Prometheus metrics
+# --------------------------------------------------
+
+HTTP_REQUESTS_TOTAL = Counter(
+    "cloudops360_http_requests_total",
+    "Total number of HTTP requests handled by CloudOps360",
+    ["method", "endpoint", "status_code"],
+)
+
+HTTP_REQUEST_DURATION = Histogram(
+    "cloudops360_http_request_duration_seconds",
+    "HTTP request processing duration in seconds",
+    ["method", "endpoint"],
+)
 
 
 # --------------------------------------------------
@@ -51,6 +89,136 @@ class TaskResponse(BaseModel):
     status: Literal["pending", "in_progress", "completed"]
     created_at: datetime
     updated_at: datetime
+
+
+# --------------------------------------------------
+# Prometheus middleware
+# --------------------------------------------------
+
+class PrometheusMiddleware(BaseHTTPMiddleware):
+    async def dispatch(
+        self,
+        request: Request,
+        call_next,
+    ) -> Response:
+
+        # Avoid counting Prometheus scraping requests.
+        if request.url.path == "/metrics":
+            return await call_next(request)
+
+        method = request.method
+        start_time = time.perf_counter()
+        status_code = "500"
+
+        try:
+            response = await call_next(request)
+            status_code = str(response.status_code)
+            return response
+
+        except Exception:
+            logger.exception(
+                "Unhandled exception while processing HTTP request",
+                extra={
+                    "method": method,
+                    "path": request.url.path,
+                },
+            )
+            raise
+
+        finally:
+            duration = time.perf_counter() - start_time
+
+            # Normalize dynamic routes to avoid creating a
+            # separate metric label for every task UUID.
+            route = request.scope.get("route")
+            if route is not None:
+                endpoint = getattr(route, "path", request.url.path)
+            else:
+                endpoint = "unmatched"
+
+            HTTP_REQUESTS_TOTAL.labels(
+                method=method,
+                endpoint=endpoint,
+                status_code=status_code,
+            ).inc()
+
+            HTTP_REQUEST_DURATION.labels(
+                method=method,
+                endpoint=endpoint,
+            ).observe(duration)
+
+
+# --------------------------------------------------
+# Application lifecycle
+# --------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info(
+        "CloudOps360 API starting",
+        extra={
+            "aws_region": AWS_REGION,
+            "dynamodb_table": DYNAMODB_TABLE,
+        },
+    )
+
+    yield
+
+    logger.info("CloudOps360 API shutting down")
+
+
+# --------------------------------------------------
+# FastAPI application
+# --------------------------------------------------
+
+app = FastAPI(
+    title="CloudOps360 API",
+    description="Serverless task management and operations platform",
+    version="0.3.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(PrometheusMiddleware)
+
+
+# --------------------------------------------------
+# Prometheus metrics endpoint
+# --------------------------------------------------
+
+@app.get("/metrics", include_in_schema=False)
+def metrics():
+    """
+    Expose application metrics in Prometheus format.
+    """
+    return Response(
+        content=generate_latest(),
+        headers={"Content-Type": CONTENT_TYPE_LATEST},
+    )
+
+
+# --------------------------------------------------
+# Root and health endpoints
+# --------------------------------------------------
+
+@app.get("/")
+def root():
+    logger.info("Root endpoint requested")
+
+    return {
+        "application": "CloudOps360",
+        "message": "Welcome to CloudOps360 API",
+        "docs": "/docs",
+    }
+
+
+@app.get("/health")
+def health():
+    logger.info("Health check requested")
+
+    return {
+        "status": "healthy",
+        "application": "CloudOps360",
+    }
 
 
 # --------------------------------------------------
@@ -91,58 +259,6 @@ def get_task_or_404(task_id: UUID) -> dict:
         "status": task["status"],
         "created_at": task["created_at"],
         "updated_at": task["updated_at"],
-    }
-
-
-# --------------------------------------------------
-# Application lifecycle
-# --------------------------------------------------
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info(
-        "CloudOps360 API starting",
-        extra={
-            "aws_region": AWS_REGION,
-            "dynamodb_table": DYNAMODB_TABLE,
-        },
-    )
-
-    yield
-
-    logger.info("CloudOps360 API shutting down")
-
-
-app = FastAPI(
-    title="CloudOps360 API",
-    description="Serverless task management and operations platform",
-    version="0.3.0",
-    lifespan=lifespan,
-)
-
-
-# --------------------------------------------------
-# Root and health endpoints
-# --------------------------------------------------
-
-@app.get("/")
-def root():
-    logger.info("Root endpoint requested")
-
-    return {
-        "application": "CloudOps360",
-        "message": "Welcome to CloudOps360 API",
-        "docs": "/docs",
-    }
-
-
-@app.get("/health")
-def health():
-    logger.info("Health check requested")
-
-    return {
-        "status": "healthy",
-        "application": "CloudOps360",
     }
 
 

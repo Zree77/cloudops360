@@ -281,30 +281,104 @@ Deployment behavior depends on the workflow configuration and its trigger condit
 - Review API authentication and authorization before exposing task-management endpoints publicly.
 - Monitor AWS usage and remove unused resources to control costs.
 
+## Observability, Monitoring, and Alerting
+
+CloudOps360 includes a full, containerized local and edge observability stack composed of **Prometheus**, **Loki**, **Grafana Alloy**, and **Grafana**:
+
+```text
+                     CloudOps360 FastAPI
+                              |
+                   +----------+----------+
+                   |                     |
+              Application Logs       Prometheus Metrics (/metrics)
+                   |                     |
+              Grafana Alloy          Prometheus
+                   |                     |
+                   v                     v
+                 Loki  ----------->   Grafana (Dashboards & Alerts)
+```
+
+### 1. Prometheus Metrics Collection
+
+The FastAPI application instruments HTTP requests with `prometheus_client` middleware:
+* `cloudops360_http_requests_total`: Counter tracking total requests by `method`, `endpoint`, and `status_code`.
+* `cloudops360_http_request_duration_seconds`: Histogram measuring response latency across bucket boundaries (`0.005s` to `10.0s`).
+
+### 2. 95th-Percentile Latency Calculation
+
+Accurate 95th-percentile API latency is calculated in Prometheus using:
+
+```promql
+histogram_quantile(0.95, sum(rate(cloudops360_http_request_duration_seconds_bucket[5m])) by (le))
+```
+
+* Retains the bucket threshold `by (le)` for valid quantile interpolation.
+* In Grafana, queries use `[$__rate_interval]` for dynamic time-range adaptation.
+
+### 3. Grafana Observability Dashboard
+
+Pre-provisioned automatically at startup under the **CloudOps360** folder (`UID: cloudops360-observability`) with 6 dedicated panels:
+1. **API Availability**: Single-stat indicator (`up{job="cloudops360-api"}`) showing real-time `UP` (green) or `DOWN` (red) health.
+2. **Total HTTP Requests**: Lifetime processed request count.
+3. **Requests per Second**: Throughput time series broken down by method and route.
+4. **95th-Percentile API Latency**: Response duration time series with smooth interpolation.
+5. **HTTP 4xx/5xx Errors**: Stacked error rate visualization.
+6. **Application Logs**: Live Loki log stream captured by Grafana Alloy (`{container="cloudops360-api"}`).
+
+### 4. Grafana Alerting Rules
+
+Provisioned via `observability/grafana/provisioning/alerting/alert_rules.yaml`:
+* **API Unavailable Alert**: Evaluates `up{job="cloudops360-api"} < 1` (fires Critical alert within 30s of API downtime).
+* **High 5xx Errors Alert**: Evaluates `rate(cloudops360_http_requests_total{status_code=~"5.."}[1m]) > 0` (fires Warning alert on server errors).
+
+### 5. Running the Monitoring Stack
+
+Start the entire environment with Docker Compose:
+
+```powershell
+docker compose up -d
+```
+
+Service endpoints:
+* **FastAPI Application**: [http://localhost:8000](http://localhost:8000)
+* **Prometheus UI**: [http://localhost:9090](http://localhost:9090)
+* **Grafana Dashboard**: [http://localhost:3000](http://localhost:3000)
+* **Grafana Alloy**: [http://localhost:12345](http://localhost:12345)
+* **Loki API**: [http://localhost:3100](http://localhost:3100)
+
+### 6. Failure Scenario Validation
+
+Run the end-to-end failure verification suite:
+
+```powershell
+python scripts/test_failure_scenarios.py
+```
+
+This verifies:
+1. HTTP 4xx validation errors.
+2. Histogram latency capture under traffic.
+3. API downtime reaction: container stop triggers `up == 0`, and container recovery restores `up == 1`.
+
 ## Current Status
 
-The project has implemented:
+The project has implemented and validated:
 
-- A FastAPI application deployed on AWS Lambda.
+- A FastAPI application deployed on AWS Lambda & Docker.
 - API Gateway integration.
 - DynamoDB-backed task operations.
-- CloudWatch log retrieval and analysis.
-- Application error and Lambda runtime failure classification.
-- Incident tracking and recovery verification.
-- Automated tests.
-- GitHub Actions CI/CD deployment.
-
-The latest recorded test run passed all 35 tests. Additional enhancements, including expanded observability, notifications, and broader cloud-tool integrations, can be developed as separate improvements.
+- CloudWatch log retrieval, classification, and incident management.
+- Centralized log aggregation via Loki and Grafana Alloy.
+- Metric instrumentation, scraping, and quantile analysis via Prometheus.
+- Pre-provisioned Grafana observability dashboards and automated alerting rules.
+- Automated tests passing **38 of 38 tests**.
+- GitHub Actions CI/CD deployment pipeline.
 
 ## Future Enhancements
 
 - Amazon SNS incident notifications.
-- Terraform-based infrastructure management.
-- Enhanced incident severity classification.
-- MTTD and MTTR metrics.
-- Additional monitoring dashboards and alerts.
-- Loki-based centralized log aggregation.
-- Improved security and deployment safeguards.
+- Extended multi-region Terraform deployment.
+- MTTD and MTTR tracking automation.
+- Distributed tracing with OpenTelemetry / Tempo.
 
 ## Author
 

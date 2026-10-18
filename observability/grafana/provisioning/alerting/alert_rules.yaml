@@ -1,0 +1,119 @@
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: cloudops360-default-channel
+    receivers:
+      - type: email
+        uid: cloudops360-default-channel
+        settings:
+          addresses: devops@cloudops360.local
+
+policies:
+  - orgId: 1
+    receiver: cloudops360-default-channel
+    group_by: ['alertname', 'severity']
+
+groups:
+  - orgId: 1
+    name: CloudOps360-Alerts
+    folder: CloudOps360
+    interval: 30s
+    rules:
+      - uid: cloudops360-api-unavailable
+        title: API Unavailable
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 60
+              to: 0
+            datasourceUid: cloudops360-prometheus
+            model:
+              editorMode: code
+              expr: up{job="cloudops360-api"}
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              refId: B
+              type: threshold
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 30s
+        annotations:
+          summary: "CloudOps360 API is unreachable"
+          description: "Prometheus scrape target is down (up == 0)."
+        labels:
+          severity: critical
+
+      - uid: cloudops360-high-5xx-errors
+        title: High 5xx Server Errors
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 120
+              to: 0
+            datasourceUid: cloudops360-prometheus
+            model:
+              editorMode: code
+              expr: sum(rate(cloudops360_http_requests_total{status_code=~"5.."}[1m])) or vector(0)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              refId: B
+              type: threshold
+        noDataState: OK
+        execErrState: Alerting
+        for: 30s
+        annotations:
+          summary: "High 5xx error rate detected"
+          description: "CloudOps360 API is responding with 5xx server errors."
+        labels:
+          severity: warning
